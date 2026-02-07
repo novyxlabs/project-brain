@@ -1,0 +1,15 @@
+{
+  "name": "project-brain",
+  "version": "1.0.0",
+  "description": "Your AI coding partner's persistent memory. Remembers stack decisions, bugs, and architecture.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0"
+  },
+  "author": "Novyx Labs",
+  "license": "MIT"
+}
