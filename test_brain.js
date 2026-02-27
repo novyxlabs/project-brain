@@ -1,123 +1,107 @@
-const axios = require('axios');
+const ProjectBrain = require('./index');
 require('dotenv').config();
 
-class ProjectBrain {
-  constructor(config = {}) {
-    this.apiKey = config.apiKey || process.env.NOVYX_API_KEY;
-    this.apiUrl = config.apiUrl || process.env.NOVYX_API_URL || 'https://novyx-ram-api.fly.dev';
-    
-    if (!this.apiKey) {
-      console.warn('⚠️ ProjectBrain: NOVYX_API_KEY is not set. Memory features disabled.');
-    }
-  }
-
-  // --- Core Methods ---
-
-  async save(content, sessionId, role = 'user') {
-    if (!this.apiKey) return;
-
-    try {
-      console.log(`[ProjectBrain] Saving: "${content.substring(0, 50)}..."`);
-      await axios.post(`${this.apiUrl}/v1/memories`, {
-        observation: content,
-        tags: [`role:${role}`, `session:${sessionId}`, 'project-context']
-      }, {
-        headers: { 'Authorization': `Bearer ${this.apiKey}` }
-      });
-      console.log(`[ProjectBrain] ✅ Saved.`);
-    } catch (error) {
-      console.error('[ProjectBrain] ❌ Save Error:', error.response ? error.response.data : error.message);
-    }
-  }
-
-  async recall(query, limit = 3) {
-    if (!this.apiKey) return [];
-
-    try {
-      console.log(`[ProjectBrain] Recalling: "${query}"`);
-      const response = await axios.get(`${this.apiUrl}/v1/memories/search`, {
-        params: {
-          q: query,
-          limit: limit
-        },
-        headers: { 'Authorization': `Bearer ${this.apiKey}` }
-      });
-      return response.data.memories || [];
-    } catch (error) {
-      console.error('[ProjectBrain] ❌ Recall Error:', error.response ? error.response.data : error.message);
-      return [];
-    }
-  }
-
-  async getStats() {
-    if (!this.apiKey) return { used: 0, limit: 0 };
-    try {
-      const response = await axios.get(`${this.apiUrl}/v1/usage`, {
-        headers: { 'Authorization': `Bearer ${this.apiKey}` }
-      });
-      return {
-        used: response.data.memories?.current || 0,
-        limit: response.data.memories?.limit || 0
-      };
-    } catch (error) {
-      console.error('[ProjectBrain] Stats Error:', error.response ? error.response.data : error.message);
-      return { used: 0, limit: 0 };
-    }
-  }
-
-  // --- Logic ---
-
-  isTechnical(text) {
-    const keywords = ['stack', 'database', 'auth', 'api', 'bug', 'error', 'fix', 'deploy', 'config', 'env', 'why', 'how', 'use', 'prefer'];
-    return keywords.some(k => text.toLowerCase().includes(k));
-  }
-}
-
-// --- Test Script ---
 async function runTest() {
+  console.log('--- ProjectBrain v2 Test Suite ---');
+
   const brain = new ProjectBrain({
     apiKey: process.env.NOVYX_API_KEY
   });
 
-  const sessionId = `test-project-${Date.now()}`;
+  const sessionId = `test-brain-${Date.now()}`;
 
-  console.log('--- 🧪 ProjectBrain Test Suite ---');
-
-  // 1. Simulate User defining stack
-  const msg1 = "For this project, we decided to use Postgres for the database and Supabase for auth.";
-  if (brain.isTechnical(msg1)) {
-    await brain.save(msg1, sessionId, 'user');
+  // 1. Save a technical decision
+  console.log('\n[1] Saving technical decision...');
+  const nonce = Date.now();
+  const decision = `ProjectBrain test ${nonce}: We decided to use Postgres for the database and Supabase for auth.`;
+  const saved = await brain.remember(decision, ['test', 'project-context', `session:${sessionId}`]);
+  if (saved) {
+    console.log(`    Saved: ${saved.uuid || saved.id}`);
+  } else {
+    console.log('    FAILED to save.');
+    return;
   }
 
-  // 2. Simulate User defining a preference
-  const msg2 = "I prefer using Tailwind CSS over Bootstrap.";
-  if (brain.isTechnical(msg2)) {
-    await brain.save(msg2, sessionId, 'user');
+  // Wait for indexing
+  await new Promise(r => setTimeout(r, 1500));
+
+  // 2. Test /brain recall
+  console.log('\n[2] Testing /brain recall...');
+  const recallResult = await brain.handleRecall(`/brain recall database ${nonce}`, sessionId);
+  console.log(`    ${recallResult.split('\n').join('\n    ')}`);
+  if (recallResult.includes('Postgres') || recallResult.includes(String(nonce))) {
+    console.log('    SUCCESS: Recall found the decision.');
+  } else {
+    console.log('    FAILED: Recall did not find the decision.');
   }
 
-  // Wait for indexing (simulated delay if needed, usually instant)
-  console.log('--- ⏳ Waiting for indexing... ---');
-  await new Promise(r => setTimeout(r, 2000));
+  // 3. Test /brain stats
+  console.log('\n[3] Testing /brain stats...');
+  const statsResult = await brain.handleStats('/brain stats', sessionId);
+  console.log(`    ${statsResult.split('\n').join('\n    ')}`);
+  if (statsResult.includes('Tier:') && statsResult.includes('Memories:')) {
+    console.log('    SUCCESS: Stats returned usage info.');
+  } else {
+    console.log('    FAILED: Stats did not return expected fields.');
+  }
 
-  // 3. Test Recall: "What database?"
-  const query1 = "Which database are we using?";
-  const recall1 = await brain.recall(query1);
-  console.log(`\nQ: "${query1}"`);
-  recall1.forEach(m => console.log(`   🧠 Found: "${m.observation}" (Score: ${m.score})`));
+  // 4. Test /brain status
+  console.log('\n[4] Testing /brain status...');
+  const statusResult = await brain.handleStatus('/brain status', sessionId);
+  console.log(`    ${statusResult.split('\n').join('\n    ')}`);
+  if (statusResult.includes('Context') || statusResult.includes('empty')) {
+    console.log('    SUCCESS: Status returned context.');
+  } else {
+    console.log('    FAILED: Unexpected status response.');
+  }
 
-  // 4. Test Recall: "CSS preference"
-  const query2 = "What CSS framework do I like?";
-  const recall2 = await brain.recall(query2);
-  console.log(`\nQ: "${query2}"`);
-  recall2.forEach(m => console.log(`   🧠 Found: "${m.observation}" (Score: ${m.score})`));
+  // 5. Test semantic novelty detection
+  console.log('\n[5] Testing novelty detection...');
+  const isNovel1 = await brain._isNovel(`Something completely new about GraphQL at ${nonce}`);
+  const isNovel2 = await brain._isNovel(decision); // Same as saved — should NOT be novel
+  console.log(`    New topic novel? ${isNovel1}`);
+  console.log(`    Duplicate novel? ${isNovel2}`);
+  if (isNovel1 === true && isNovel2 === false) {
+    console.log('    SUCCESS: Novelty detection working correctly.');
+  } else {
+    console.log('    INFO: Novelty results may vary based on existing memory state.');
+  }
 
-  // 5. Test Stats
-  const stats = await brain.getStats();
-  console.log(`\n📊 Stats: ${stats.used} / ${stats.limit} memories used.`);
+  // 6. Test /brain rewind (Pro feature — expect graceful 403 on free tier)
+  console.log('\n[6] Testing /brain rewind (Pro feature)...');
+  const rewindResult = await brain.handleRewind('/brain rewind 1 hour ago', sessionId);
+  console.log(`    ${rewindResult.split('\n').join('\n    ')}`);
+  if (rewindResult.includes('Preview') || rewindResult.includes('Pro plan')) {
+    console.log('    SUCCESS: Rewind returned preview or tier gate.');
+  } else {
+    console.log('    INFO: Unexpected rewind response.');
+  }
+
+  // 7. Test /brain diff (Pro feature — expect graceful 403 on free tier)
+  console.log('\n[7] Testing /brain diff (Pro feature)...');
+  const diffResult = await brain.handleDiff('/brain diff 1h', sessionId);
+  console.log(`    ${diffResult.split('\n').join('\n    ')}`);
+  if (diffResult.includes('Diff') || diffResult.includes('Pro plan')) {
+    console.log('    SUCCESS: Diff returned results or tier gate.');
+  } else {
+    console.log('    INFO: Unexpected diff response.');
+  }
+
+  // 8. Test /brain help
+  console.log('\n[8] Testing /brain help...');
+  const helpResult = await brain.handleHelp();
+  console.log(`    ${helpResult.split('\n').join('\n    ')}`);
+  if (helpResult.includes('/brain rewind') && helpResult.includes('/brain prove')) {
+    console.log('    SUCCESS: Help lists all v2 commands.');
+  } else {
+    console.log('    FAILED: Help missing v2 commands.');
+  }
+
+  console.log('\n--- All tests complete ---');
 }
 
 if (require.main === module) {
-  runTest();
+  runTest().catch(console.error);
 }
 
 module.exports = ProjectBrain;

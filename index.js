@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Project Brain - v2 SDK Integration
- * 
- * Auto-recalls project context and saves technical decisions.
- * Uses Novyx for memory, handles errors gracefully.
+ * Project Brain v2 — AI Coding Partner with Persistent Memory
+ *
+ * Semantic auto-capture, rollback, lifecycle audit, time-range diffing.
+ * Pro+ features degrade gracefully on Free tier.
  */
 
 const axios = require('axios');
@@ -13,22 +13,25 @@ class ProjectBrain {
   constructor(config = {}) {
     this.apiKey = config.apiKey || process.env.NOVYX_API_KEY;
     this.apiUrl = config.apiUrl || process.env.NOVYX_API_URL || 'https://novyx-ram-api.fly.dev';
-    
+    this.noveltyThreshold = config.noveltyThreshold || 0.75;
+
     if (!this.apiKey) {
-      console.warn('⚠️ ProjectBrain: NOVYX_API_KEY not set');
+      console.warn('[ProjectBrain] NOVYX_API_KEY not set. Memory features disabled.');
     }
-    
+
     this.commands = [
       { trigger: '/brain status', handler: this.handleStatus.bind(this) },
       { trigger: '/brain stats', handler: this.handleStats.bind(this) },
       { trigger: '/brain recall', handler: this.handleRecall.bind(this) },
-      { trigger: '/brain diff', handler: this.handleDiff.bind(this) }
+      { trigger: '/brain rewind', handler: this.handleRewind.bind(this) },
+      { trigger: '/brain prove', handler: this.handleProve.bind(this) },
+      { trigger: '/brain diff', handler: this.handleDiff.bind(this) },
+      { trigger: '/brain help', handler: this.handleHelp.bind(this) },
     ];
   }
 
-  /**
-   * Remember a memory
-   */
+  // ---- Core API Methods ----
+
   async remember(observation, tags = []) {
     if (!this.apiKey) return null;
     try {
@@ -43,9 +46,6 @@ class ProjectBrain {
     }
   }
 
-  /**
-   * Search memories
-   */
   async recall(query, limit = 5) {
     if (!this.apiKey) return [];
     try {
@@ -60,9 +60,6 @@ class ProjectBrain {
     }
   }
 
-  /**
-   * Get memory stats
-   */
   async stats() {
     if (!this.apiKey) return null;
     try {
@@ -76,9 +73,6 @@ class ProjectBrain {
     }
   }
 
-  /**
-   * Get usage/limits
-   */
   async usage() {
     if (!this.apiKey) return null;
     try {
@@ -92,35 +86,53 @@ class ProjectBrain {
     }
   }
 
+  async rollback(target, dryRun = false) {
+    if (!this.apiKey) return null;
+    try {
+      const response = await axios.post(`${this.apiUrl}/v1/rollback`, {
+        target,
+        dry_run: dryRun
+      }, { headers: this._authHeaders() });
+      return response.data;
+    } catch (error) {
+      this._handleError(error, 'rollback');
+      return null;
+    }
+  }
+
+  async replayLifecycle(memoryId) {
+    if (!this.apiKey) return null;
+    try {
+      const response = await axios.get(`${this.apiUrl}/v1/replay/memory/${memoryId}`, {
+        headers: this._authHeaders()
+      });
+      return response.data;
+    } catch (error) {
+      this._handleError(error, 'replay lifecycle');
+      return null;
+    }
+  }
+
+  async replayDiff(fromTs, toTs) {
+    if (!this.apiKey) return null;
+    try {
+      const response = await axios.get(`${this.apiUrl}/v1/replay/diff`, {
+        params: { from: fromTs, to: toTs },
+        headers: this._authHeaders()
+      });
+      return response.data;
+    } catch (error) {
+      this._handleError(error, 'replay diff');
+      return null;
+    }
+  }
+
   _authHeaders() {
     return { 'Authorization': `Bearer ${this.apiKey}` };
   }
 
-  /**
-   * Handle errors
-   */
-  _handleError(error, action) {
-    if (error.response) {
-      const status = error.response.status;
-      if (status === 429 || status === 403) {
-        const data = error.response.data || {};
-        console.warn(`[ProjectBrain] ⚠️ ${data.error || 'Limit reached'} during ${action}. Upgrade at novyxlabs.com/pricing`);
-      } else {
-        console.error(`[ProjectBrain] API Error (${status}) during ${action}`);
-      }
-    }
-  }
+  // ---- Middleware Hooks ----
 
-  /**
-   * Check if message is a command
-   */
-  _isCommand(message) {
-    return this.commands.some(cmd => message.toLowerCase().startsWith(cmd.trigger));
-  }
-
-  /**
-   * Middleware: On incoming message
-   */
   async onMessage(userMessage, sessionId) {
     // Handle commands
     for (const cmd of this.commands) {
@@ -129,91 +141,232 @@ class ProjectBrain {
       }
     }
 
-    // Auto-recall for technical queries
-    if (this.isTechnicalQuery(userMessage)) {
-      const context = await this.recall(userMessage, 3);
-      if (context.length > 0) {
-        return `[🧠 Project Context]:\n${context.map(m => `- ${m.observation}`).join('\n')}\n\nUser: ${userMessage}`;
-      }
+    // Auto-recall: semantic search for relevant context
+    const context = await this.recall(userMessage, 3);
+    if (context.length > 0) {
+      const contextBlock = context.map(m => `- ${m.observation}`).join('\n');
+      return `[Project Context]\n${contextBlock}\n\nUser: ${userMessage}`;
     }
-    
+
     return userMessage;
   }
 
-  /**
-   * Middleware: On agent response
-   */
   async onResponse(agentResponse, sessionId) {
-    if (this.hasTechnicalValue(agentResponse)) {
-      await this.remember(agentResponse, ['project-context', 'auto-save']);
+    if (!this.apiKey) return;
+
+    // Semantic novelty detection: only save if the response contains
+    // information that doesn't already exist in memory
+    const isNovel = await this._isNovel(agentResponse);
+    if (isNovel) {
+      await this.remember(agentResponse, ['project-context', 'auto-save', `session:${sessionId}`]);
     }
   }
 
   // ---- Command Handlers ----
 
   async handleStatus(message, sessionId) {
-    const recents = await this.recall("project status update context", 5);
+    const recents = await this.recall("project status update context decisions", 5);
     if (recents.length === 0) {
-      return "🧠 Brain is empty. Start discussing your project.";
+      return "Brain is empty. Start discussing your project.";
     }
-    return `🧠 **Project Context (Recent):**\n${recents.map(m => `- ${m.observation}`).join('\n')}`;
+    return `**Project Context (Recent):**\n${recents.map(m => `- ${m.observation}`).join('\n')}`;
   }
 
   async handleStats(message, sessionId) {
-    const usage = await this.usage();
-    const memStats = await this.stats();
-    
-    if (!usage) {
-      return "⚠️ Could not fetch stats.";
-    }
+    const usageData = await this.usage();
+    if (!usageData) return "Could not fetch stats. Check your API key.";
 
-    const tier = usage.tier || 'Free';
-    const used = usage.memories?.current || 0;
-    const limit = usage.memories?.limit || 1000;
-    const percent = Math.round((used / limit) * 100);
-    const apiCurrent = usage.api_calls?.current || 0;
-    const apiLimit = usage.api_calls?.limit || 'N/A';
+    const tier = usageData.tier || 'Free';
+    const memUsed = usageData.memories?.current || 0;
+    const memLimit = usageData.memories?.limit || 0;
+    const pct = memLimit > 0 ? Math.round((memUsed / memLimit) * 100) : 0;
+    const apiUsed = usageData.api_calls?.current || 0;
+    const apiLimit = usageData.api_calls?.limit || 0;
 
-    return `📊 **Memory Usage:**\n` +
+    return `**Memory Stats:**\n` +
            `Tier: ${tier}\n` +
-           `Used: ${used} / ${limit} (${percent}%)\n` +
-           `API Calls: ${apiCurrent} / ${apiLimit}`;
+           `Memories: ${memUsed} / ${memLimit} (${pct}%)\n` +
+           `API Calls: ${apiUsed} / ${apiLimit}`;
   }
 
   async handleRecall(message, sessionId) {
     const query = message.replace('/brain recall', '').trim();
     if (!query) return "Usage: `/brain recall <topic>`";
-    
+
     const results = await this.recall(query, 5);
-    if (results.length === 0) return `No memories for "${query}".`;
-    
-    return `🔍 **Recall for "${query}":**\n${results.map(m => 
-      `- ${m.observation} (${Math.round(m.score * 100)}%)`
+    if (results.length === 0) return `No memories found for "${query}".`;
+
+    return `**Recall: "${query}"**\n${results.map(m =>
+      `- ${m.observation} (${Math.round((m.score || 0) * 100)}%)`
     ).join('\n')}`;
   }
 
+  async handleRewind(message, sessionId) {
+    const target = message.replace('/brain rewind', '').trim();
+    if (!target) {
+      return "Usage: `/brain rewind <timestamp or relative>`\n" +
+             "Examples:\n" +
+             "  `/brain rewind 2 hours ago`\n" +
+             "  `/brain rewind 2026-02-25T10:00:00Z`\n" +
+             "\nFirst run shows a preview. Run again with same target to execute.";
+    }
+
+    // Always preview first
+    const preview = await this.rollback(target, true);
+    if (!preview) {
+      return "Rewind failed. This feature requires Pro plan or above.";
+    }
+
+    return `**Rewind Preview** (to: ${preview.rolled_back_to || target})\n` +
+           `Artifacts to restore: ${preview.artifacts_restored || 0}\n` +
+           `Operations to undo: ${preview.operations_undone || 0}\n` +
+           `\n*This is a dry run. To execute, use the Novyx dashboard or SDK rollback.*`;
+  }
+
+  async handleProve(message, sessionId) {
+    const memoryId = message.replace('/brain prove', '').trim();
+    if (!memoryId) {
+      return "Usage: `/brain prove <memory_id>`\n" +
+             "Shows the full lifecycle of a memory: creation, updates, recalls, links.";
+    }
+
+    const lifecycle = await this.replayLifecycle(memoryId);
+    if (!lifecycle) {
+      return `Could not fetch lifecycle for ${memoryId}. Requires Pro plan.`;
+    }
+
+    const lines = [`**Memory Lifecycle: ${memoryId}**`];
+    lines.push(`State: ${lifecycle.current_state}`);
+    lines.push(`Created: ${lifecycle.created_at}`);
+    lines.push(`Observation: ${(lifecycle.observation || '').slice(0, 100)}`);
+    lines.push(`Recall Count: ${lifecycle.recall_count || 0}`);
+
+    if (lifecycle.events && lifecycle.events.length > 0) {
+      lines.push(`\n**Events:**`);
+      for (const ev of lifecycle.events.slice(0, 15)) {
+        const ts = new Date(ev.timestamp).toLocaleString();
+        lines.push(`  \`${ts}\` ${ev.operation}${ev.detail ? ': ' + ev.detail : ''}`);
+      }
+    }
+
+    if (lifecycle.links && lifecycle.links.length > 0) {
+      lines.push(`\n**Links:** ${lifecycle.links.length} connections`);
+    }
+
+    return lines.join('\n');
+  }
+
   async handleDiff(message, sessionId) {
-    // What changed recently?
-    const recent = await this.recall("recent changes updates decisions", 10);
-    return `📋 **Recent Project Memories:**\n${recent.map(m => `- ${m.observation}`).join('\n')}`;
+    const args = message.replace('/brain diff', '').trim();
+
+    // Accept relative shorthand: "1h", "24h", "7d"
+    let fromTs, toTs;
+    const relMatch = args.match(/^(\d+)([hdm])$/i);
+    if (relMatch) {
+      const amount = parseInt(relMatch[1]);
+      const unit = relMatch[2].toLowerCase();
+      const ms = unit === 'h' ? amount * 3600000 : unit === 'd' ? amount * 86400000 : amount * 60000;
+      fromTs = new Date(Date.now() - ms).toISOString();
+      toTs = new Date().toISOString();
+    } else if (args.includes(' ')) {
+      // Expect "from_ts to_ts"
+      const parts = args.split(/\s+/);
+      fromTs = parts[0];
+      toTs = parts[1];
+    } else {
+      return "Usage: `/brain diff <timerange>`\n" +
+             "Examples:\n" +
+             "  `/brain diff 1h` — changes in last hour\n" +
+             "  `/brain diff 24h` — changes in last day\n" +
+             "  `/brain diff 7d` — changes in last week\n" +
+             "  `/brain diff 2026-02-25T00:00:00Z 2026-02-25T12:00:00Z`";
+    }
+
+    const diff = await this.replayDiff(fromTs, toTs);
+    if (!diff) {
+      return "Diff failed. This feature requires Pro plan or above.";
+    }
+
+    const lines = [`**Memory Diff**`];
+    lines.push(`Period: ${diff.from_timestamp} → ${diff.to_timestamp}`);
+
+    if (diff.added && diff.added.length > 0) {
+      lines.push(`\n**Added (${diff.added.length}):**`);
+      for (const e of diff.added.slice(0, 5)) {
+        lines.push(`  + ${(e.observation || e.memory_id || '').slice(0, 80)}`);
+      }
+      if (diff.added.length > 5) lines.push(`  ... and ${diff.added.length - 5} more`);
+    }
+
+    if (diff.removed && diff.removed.length > 0) {
+      lines.push(`\n**Removed (${diff.removed.length}):**`);
+      for (const e of diff.removed.slice(0, 5)) {
+        lines.push(`  - ${(e.observation || e.memory_id || '').slice(0, 80)}`);
+      }
+      if (diff.removed.length > 5) lines.push(`  ... and ${diff.removed.length - 5} more`);
+    }
+
+    if (diff.modified && diff.modified.length > 0) {
+      lines.push(`\n**Modified (${diff.modified.length}):**`);
+      for (const e of diff.modified.slice(0, 5)) {
+        lines.push(`  ~ ${(e.observation || e.memory_id || '').slice(0, 80)}`);
+      }
+    }
+
+    if (diff.summary) {
+      lines.push(`\n*${diff.summary}*`);
+    }
+
+    return lines.join('\n');
+  }
+
+  async handleHelp() {
+    return "**Project Brain Commands:**\n" +
+           "- `/brain status`: Recent project context\n" +
+           "- `/brain stats`: Memory usage and tier info\n" +
+           "- `/brain recall <topic>`: Semantic search for a topic\n" +
+           "- `/brain rewind <time>`: Preview rollback to a point in time (Pro)\n" +
+           "- `/brain prove <id>`: Full lifecycle of a memory (Pro)\n" +
+           "- `/brain diff <range>`: What changed in a time range (Pro)\n" +
+           "- `/brain help`: This menu\n" +
+           "\nMemories are automatically captured when your responses contain novel information.";
   }
 
   // ---- Helpers ----
 
-  isTechnicalQuery(text) {
-    const keywords = ['stack', 'database', 'auth', 'api', 'bug', 'error', 'fix', 'deploy', 'config', 'env', 'why', 'how'];
-    return keywords.some(k => text.toLowerCase().includes(k));
+  async _isNovel(text) {
+    if (!text || text.length < 20) return false;
+
+    // Check if similar content already exists
+    const existing = await this.recall(text, 1);
+    if (existing.length === 0) return true;
+
+    // If the best match score is below threshold, it's novel
+    const bestScore = existing[0].score || 0;
+    return bestScore < this.noveltyThreshold;
   }
 
-  hasTechnicalValue(text) {
-    const patterns = [
-      /we (should|will|decided to) use/i,
-      /fixed (the|a) bug/i,
-      /error (was|is) caused by/i,
-      /stack:/i,
-      /config:/i
-    ];
-    return patterns.some(p => p.test(text));
+  _handleError(error, action) {
+    if (error.response) {
+      const status = error.response.status;
+      const data = error.response.data || {};
+
+      if (status === 429) {
+        console.warn(`[ProjectBrain] Rate limit during ${action}. Upgrade at novyxlabs.com/pricing`);
+      } else if (status === 403) {
+        const detail = data.detail || data.error || '';
+        const msg = typeof detail === 'object' ? detail.message || JSON.stringify(detail) : detail;
+        if (msg.toLowerCase().includes('upgrade') || msg.toLowerCase().includes('pro')) {
+          console.warn(`[ProjectBrain] ${msg} — upgrade at novyxlabs.com/pricing`);
+        } else {
+          console.warn(`[ProjectBrain] Access forbidden during ${action}. Check your API key.`);
+        }
+      } else {
+        console.error(`[ProjectBrain] API Error (${status}) during ${action}:`, data);
+      }
+    } else if (error.request) {
+      console.error(`[ProjectBrain] Network Error during ${action}: ${error.message}`);
+    }
   }
 }
 
