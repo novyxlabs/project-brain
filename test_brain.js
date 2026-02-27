@@ -50,8 +50,19 @@ class ProjectBrain {
   }
 
   async getStats() {
-    // Mock for now as API might not expose raw count yet
-    return { used: 1247, limit: 10000 }; 
+    if (!this.apiKey) return { used: 0, limit: 0 };
+    try {
+      const response = await axios.get(`${this.apiUrl}/v1/usage`, {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` }
+      });
+      return {
+        used: response.data.memories?.current || 0,
+        limit: response.data.memories?.limit || 0
+      };
+    } catch (error) {
+      console.error('[ProjectBrain] Stats Error:', error.response ? error.response.data : error.message);
+      return { used: 0, limit: 0 };
+    }
   }
 
   // --- Logic ---

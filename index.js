@@ -168,14 +168,16 @@ class ProjectBrain {
     }
 
     const tier = usage.tier || 'Free';
-    const used = usage.usage?.memories_stored || 0;
-    const limit = usage.usage?.memory_limit || 1000;
+    const used = usage.memories?.current || 0;
+    const limit = usage.memories?.limit || 1000;
     const percent = Math.round((used / limit) * 100);
+    const apiCurrent = usage.api_calls?.current || 0;
+    const apiLimit = usage.api_calls?.limit || 'N/A';
 
     return `📊 **Memory Usage:**\n` +
            `Tier: ${tier}\n` +
            `Used: ${used} / ${limit} (${percent}%)\n` +
-           `API Calls: ${usage.usage?.api_calls_this_month || 'N/A'}`;
+           `API Calls: ${apiCurrent} / ${apiLimit}`;
   }
 
   async handleRecall(message, sessionId) {
