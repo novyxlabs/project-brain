@@ -43,7 +43,7 @@ class ProjectBrain {
   async remember(observation, tags = []) {
     if (!this.apiKey) return null;
     try {
-      const response = await axios.post(`${this.apiUrl}/v1/memories`, {
+      const response = await axios.post(`${this.apiUrl}/v1/memories?conflict_strategy=lww`, {
         observation,
         tags
       }, { headers: this._authHeaders() });
