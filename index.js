@@ -19,10 +19,14 @@ class ProjectBrain {
       console.warn('[ProjectBrain] NOVYX_API_KEY not set. Memory features disabled.');
     }
 
+    // Pending rollback state for confirmation flow
+    this.pendingRollback = null;
+
     this.commands = [
       { trigger: '/brain status', handler: this.handleStatus.bind(this) },
       { trigger: '/brain stats', handler: this.handleStats.bind(this) },
       { trigger: '/brain recall', handler: this.handleRecall.bind(this) },
+      { trigger: '/brain rewind confirm', handler: this.handleRewindConfirm.bind(this) },
       { trigger: '/brain rewind', handler: this.handleRewind.bind(this) },
       { trigger: '/brain prove', handler: this.handleProve.bind(this) },
       { trigger: '/brain diff', handler: this.handleDiff.bind(this) },
@@ -208,7 +212,7 @@ class ProjectBrain {
              "Examples:\n" +
              "  `/brain rewind 2 hours ago`\n" +
              "  `/brain rewind 2026-02-25T10:00:00Z`\n" +
-             "\nFirst run shows a preview. Run again with same target to execute.";
+             "\nFirst run shows a preview. Use `/brain rewind confirm` to execute.";
     }
 
     // Always preview first
@@ -217,10 +221,55 @@ class ProjectBrain {
       return "Rewind failed. This feature requires Pro plan or above.";
     }
 
-    return `**Rewind Preview** (to: ${preview.rolled_back_to || target})\n` +
-           `Artifacts to restore: ${preview.artifacts_restored || 0}\n` +
-           `Operations to undo: ${preview.operations_undone || 0}\n` +
-           `\n*This is a dry run. To execute, use the Novyx dashboard or SDK rollback.*`;
+    // Store pending rollback for confirmation
+    this.pendingRollback = {
+      target: target,
+      preview: preview,
+      timestamp: new Date().toISOString()
+    };
+
+    return `**Rewind Preview** (to: ${preview.target_timestamp || target})\n` +
+           `Artifacts affected: ${preview.artifacts_affected || 0}\n` +
+           `  - Restore: ${preview.artifacts_restored || 0}\n` +
+           `  - Remove: ${preview.artifacts_removed || 0}\n` +
+           `\n⚠️ To execute this rollback, type: \`/brain rewind confirm\``;
+  }
+
+  async handleRewindConfirm(message, sessionId) {
+    if (!this.pendingRollback) {
+      return "No pending rollback. Use `/brain rewind <time>` first to preview.";
+    }
+
+    const { target, preview, timestamp } = this.pendingRollback;
+    const pendingAge = Date.now() - new Date(timestamp).getTime();
+    const maxAgeMs = 5 * 60 * 1000; // 5 minutes
+
+    if (pendingAge > maxAgeMs) {
+      this.pendingRollback = null;
+      return "⏰ Rollback preview expired (5 min). Run `/brain rewind <time>` again.";
+    }
+
+    // Safety check: max 100 artifacts
+    if (preview.artifacts_affected > 100) {
+      this.pendingRollback = null;
+      return `❌ Rollback aborted: Too many artifacts (${preview.artifacts_affected}).\n` +
+             `Manual review required. Use Novyx dashboard for large rollbacks.`;
+    }
+
+    // Execute the rollback
+    const result = await this.rollback(target, false);
+    if (!result) {
+      return "❌ Rollback execution failed. Check your API key and plan.";
+    }
+
+    // Clear pending state
+    this.pendingRollback = null;
+
+    return `✅ **Rollback Executed**\n` +
+           `Restored to: ${result.target_timestamp || target}\n` +
+           `Artifacts restored: ${result.artifacts_restored || 0}\n` +
+           `Artifacts removed: ${result.artifacts_removed || 0}\n` +
+           `\nYour project memory has been rolled back.`;
   }
 
   async handleProve(message, sessionId) {
@@ -326,6 +375,7 @@ class ProjectBrain {
            "- `/brain stats`: Memory usage and tier info\n" +
            "- `/brain recall <topic>`: Semantic search for a topic\n" +
            "- `/brain rewind <time>`: Preview rollback to a point in time (Pro)\n" +
+           "- `/brain rewind confirm`: Execute the pending rollback\n" +
            "- `/brain prove <id>`: Full lifecycle of a memory (Pro)\n" +
            "- `/brain diff <range>`: What changed in a time range (Pro)\n" +
            "- `/brain help`: This menu\n" +
