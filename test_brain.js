@@ -104,4 +104,4 @@ if (require.main === module) {
   runTest().catch(console.error);
 }
 
-module.exports = ProjectBrain;
+module.exports = runTest;

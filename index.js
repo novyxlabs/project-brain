@@ -7,6 +7,9 @@
  */
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 require('dotenv').config();
 
 class ProjectBrain {
@@ -19,8 +22,9 @@ class ProjectBrain {
       console.warn('[ProjectBrain] NOVYX_API_KEY not set. Memory features disabled.');
     }
 
-    // Pending rollback state for confirmation flow
-    this.pendingRollback = null;
+    // Pending rollback state for confirmation flow (persisted to temp file)
+    this._rollbackFile = path.join(os.tmpdir(), `.project-brain-rollback-${(this.apiKey || '').slice(-8)}.json`);
+    this.pendingRollback = this._loadPendingRollback();
 
     this.commands = [
       { trigger: '/brain status', handler: this.handleStatus.bind(this) },
@@ -145,6 +149,11 @@ class ProjectBrain {
       }
     }
 
+    // Skip recall for trivial messages
+    if (userMessage.length < 15) {
+      return userMessage;
+    }
+
     // Auto-recall: semantic search for relevant context
     const context = await this.recall(userMessage, 3);
     if (context.length > 0) {
@@ -157,12 +166,15 @@ class ProjectBrain {
 
   async onResponse(agentResponse, sessionId) {
     if (!this.apiKey) return;
+    if (!agentResponse || agentResponse.length < 20) return;  // Skip trivial responses
 
-    // Semantic novelty detection: only save if the response contains
-    // information that doesn't already exist in memory
     const isNovel = await this._isNovel(agentResponse);
     if (isNovel) {
-      await this.remember(agentResponse, ['project-context', 'auto-save', `session:${sessionId}`]);
+      // Truncate long responses to avoid storing filler
+      const observation = agentResponse.length > 500
+        ? agentResponse.slice(0, 500) + '...'
+        : agentResponse;
+      await this.remember(observation, ['project-context', 'auto-save', `session:${sessionId}`]);
     }
   }
 
@@ -206,13 +218,10 @@ class ProjectBrain {
   }
 
   async handleRewind(message, sessionId) {
-    const target = message.replace('/brain rewind', '').trim();
+    const rawTarget = message.replace('/brain rewind', '').trim() || '1 hour ago';
+    const target = this._parseRelativeTime(rawTarget);
     if (!target) {
-      return "Usage: `/brain rewind <timestamp or relative>`\n" +
-             "Examples:\n" +
-             "  `/brain rewind 2 hours ago`\n" +
-             "  `/brain rewind 2026-02-25T10:00:00Z`\n" +
-             "\nFirst run shows a preview. Use `/brain rewind confirm` to execute.";
+      return `Could not parse time: "${rawTarget}". Try "1h", "30m", "2 days ago", or an ISO timestamp.`;
     }
 
     // Always preview first
@@ -227,6 +236,7 @@ class ProjectBrain {
       preview: preview,
       timestamp: new Date().toISOString()
     };
+    this._savePendingRollback(this.pendingRollback);
 
     return `**Rewind Preview** (to: ${preview.target_timestamp || target})\n` +
            `Artifacts affected: ${preview.artifacts_affected || 0}\n` +
@@ -245,13 +255,13 @@ class ProjectBrain {
     const maxAgeMs = 5 * 60 * 1000; // 5 minutes
 
     if (pendingAge > maxAgeMs) {
-      this.pendingRollback = null;
+      this._clearPendingRollback();
       return "⏰ Rollback preview expired (5 min). Run `/brain rewind <time>` again.";
     }
 
     // Safety check: max 100 artifacts
     if (preview.artifacts_affected > 100) {
-      this.pendingRollback = null;
+      this._clearPendingRollback();
       return `❌ Rollback aborted: Too many artifacts (${preview.artifacts_affected}).\n` +
              `Manual review required. Use Novyx dashboard for large rollbacks.`;
     }
@@ -263,7 +273,7 @@ class ProjectBrain {
     }
 
     // Clear pending state
-    this.pendingRollback = null;
+    this._clearPendingRollback();
 
     return `✅ **Rollback Executed**\n` +
            `Restored to: ${result.target_timestamp || target}\n` +
@@ -383,6 +393,50 @@ class ProjectBrain {
   }
 
   // ---- Helpers ----
+
+  _parseRelativeTime(input) {
+    const now = Date.now();
+    // Match patterns like "1 hour ago", "2h", "30 minutes", "1d", "2 days ago"
+    const match = input.trim().match(/^(\d+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes|d|day|days)\s*(ago)?$/i);
+    if (!match) {
+      // Try ISO timestamp directly
+      const d = new Date(input);
+      if (!isNaN(d.getTime())) return d.toISOString();
+      return null;
+    }
+    const amount = parseInt(match[1]);
+    const unit = match[2].toLowerCase();
+    let ms;
+    if (unit.startsWith('h')) ms = amount * 60 * 60 * 1000;
+    else if (unit.startsWith('m')) ms = amount * 60 * 1000;
+    else if (unit.startsWith('d')) ms = amount * 24 * 60 * 60 * 1000;
+    else return null;
+    return new Date(now - ms).toISOString();
+  }
+
+  _loadPendingRollback() {
+    try {
+      const data = fs.readFileSync(this._rollbackFile, 'utf8');
+      const parsed = JSON.parse(data);
+      // Expire after 5 minutes
+      if (Date.now() - parsed.createdAt > 5 * 60 * 1000) {
+        fs.unlinkSync(this._rollbackFile);
+        return null;
+      }
+      return parsed;
+    } catch { return null; }
+  }
+
+  _savePendingRollback(data) {
+    try {
+      fs.writeFileSync(this._rollbackFile, JSON.stringify({ ...data, createdAt: Date.now() }));
+    } catch {}
+  }
+
+  _clearPendingRollback() {
+    this.pendingRollback = null;
+    try { fs.unlinkSync(this._rollbackFile); } catch {}
+  }
 
   async _isNovel(text) {
     if (!text || text.length < 20) return false;

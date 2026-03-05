@@ -4,7 +4,8 @@
   "description": "Your AI coding partner's persistent memory. Remembers stack decisions, bugs, and architecture.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node test_brain.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
